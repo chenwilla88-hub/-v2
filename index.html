@@ -9,5 +9,48 @@
   <body>
     <div id="app"></div>
     <script type="module" src="./src/app.js"></script>
+
+    <!-- DeepSeek 用户行为分析脚本 -->
+    <script>
+    (function () {
+      // ⚠️ 注意：请核对一下这个地址，是不是你在 Cloudflare 里的 Worker 地址
+      // 如果名字是 sleep-ai-proxy，那就是下面这个。如果是别的，请替换。
+      const WORKER_URL = "https://sleep-ai-proxy.chenwilla88.workers.dev";
+      const STORAGE_KEY = "visit_events";
+
+      // 1. 记录本次访问
+      const event = {
+        page: window.location.pathname,
+        referrer: document.referrer ? new URL(document.referrer).hostname : "direct",
+        timestamp: new Date().toISOString(),
+      };
+
+      const events = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      events.push(event);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
+
+      // 2. 累积到 5 条自动发给 Worker 进行分析
+      if (events.length >= 5) {
+        localStorage.removeItem(STORAGE_KEY); 
+        fetch(WORKER_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ events: events }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            const text = data.choices?.[0]?.message?.content;
+            if (text) {
+              console.log("【AI 分析报告】\n" + text);
+              // 如果你想在网页上弹窗提示，可以把下面这行取消注释
+              // alert("AI 分析报告：\n" + text);
+            } else {
+              console.error("返回数据异常：", data);
+            }
+          })
+          .catch((err) => console.error("请求 Worker 失败：", err));
+      }
+    })();
+    </script>
   </body>
 </html>

@@ -245,20 +245,74 @@ export function buildSleepPlan(input) {
 
 /**
  * Async seam for a future AI backend.
- *
- * Replace the body with something like:
- *   const response = await fetch("/api/sleep-plan", { method: "POST", ... });
- *   return response.json();
- *
- * The UI only depends on the returned plan shape. API keys must stay on the
- * server, never in this file.
  */
 export async function generateSleepPlan(input, { delayMs = 650 } = {}) {
   const normalized = normalizeSleepInput(input);
+  
+  // 1. 先用本地规则生成基础计划（作为兜底，保证 UI 正常显示）
+  const localPlan = buildSleepPlan(normalized);
+
   if (delayMs > 0) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  return buildSleepPlan(normalized);
+
+  // 2. 提取用户输入，准备发给 AI
+  const tagNames = normalized.tags.map(id => TAG_BY_ID.get(id)?.labelZh).filter(Boolean);
+  const userCondition = normalized.description 
+    ? `${normalized.description} （相关标签：${tagNames.join("、")}）`
+    : `我现在的状态是：${tagNames.join("、")}`;
+
+  try {
+    // ⚠️ 这里填入你的 Cloudflare Worker 地址
+    const PROXY_URL = 'https://sleep-ai-proxy.chenwilla88.workers.dev';
+    
+    const response = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat', // 标准模型名
+        messages: [
+          { 
+            role: 'system', 
+            content: '你是一个温柔、专业的AI睡眠引导助手。请根据用户的状态，生成一段助眠引导文案。请严格返回JSON格式，必须包含以下字段：titleZh(10字内的诗意标题), summary(30字内温暖总结), reason(100字内解释推荐原因), tip(20字内睡前小建议)。' 
+          },
+          { 
+            role: 'user', 
+            content: userCondition 
+          }
+        ],
+        response_format: { type: "json_object" } // 强制返回 JSON
+      })
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const aiContent = data.choices[0].message.content;
+    
+    // 清理可能携带的 markdown 标记并解析
+    const cleanJsonStr = aiContent.replace(/```json|```/g, '').trim();
+    const aiJson = JSON.parse(cleanJsonStr);
+
+    // 3. 将 AI 生成的内容覆盖到本地计划上
+    return {
+      ...localPlan,
+      source: "ai-deepseek",
+      titleZh: aiJson.titleZh || localPlan.titleZh,
+      summary: aiJson.summary || localPlan.summary,
+      reason: aiJson.reason || localPlan.reason,
+      tip: aiJson.tip || localPlan.tip
+    };
+
+  } catch (error) {
+    console.error("AI 接口调用失败，已降级为本地推荐:", error);
+    // 如果 AI 挂了，静默降级返回原计划
+    return localPlan;
+  }
 }
 
 export function getTemplateTitle(templateId) {
